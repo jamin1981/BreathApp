@@ -1,0 +1,705 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { 
+  Play, Pause, Square, Activity, Plus, Wind, List, CheckCircle2, 
+  ArrowLeft, Settings2, Star, Trash2, Edit3, GripVertical, ChevronDown, ChevronRight, X 
+} from 'lucide-react';
+
+// --- AUDIO UTILITIES ---
+
+const playChime = (type = 'phase') => {
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+    
+    if (type === 'phase') {
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
+      
+      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+      gainNode.gain.linearRampToValueAtTime(0.1, audioCtx.currentTime + 0.01);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.5);
+    } else if (type === 'completion') {
+      const notes = [440, 554.37, 659.25]; 
+      notes.forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        const start = audioCtx.currentTime + (i * 0.15);
+        
+        osc.frequency.setValueAtTime(freq, start);
+        g.gain.setValueAtTime(0, start);
+        g.gain.linearRampToValueAtTime(0.1, start + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.001, start + 0.6);
+        
+        osc.connect(g);
+        g.connect(audioCtx.destination);
+        osc.start(start);
+        osc.stop(start + 0.6);
+      });
+    }
+  } catch (e) {
+    console.warn("Audio Context blocked or unsupported");
+  }
+};
+
+// --- DATABASE UTILITY ---
+
+const DB_NAME = 'PranaFlowDB_V5';
+const DB_VERSION = 5;
+const STORE_LOGS = 'logs';
+const STORE_SETTINGS = 'settings';
+const STORE_EXERCISES = 'exercises';
+
+const initDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE_LOGS)) db.createObjectStore(STORE_LOGS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_SETTINGS)) db.createObjectStore(STORE_SETTINGS);
+      if (!db.objectStoreNames.contains(STORE_EXERCISES)) db.createObjectStore(STORE_EXERCISES, { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const saveData = async (storeName, key, data) => {
+  const db = await initDB();
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  store.put(data, key === null ? undefined : key);
+  return tx.complete;
+};
+
+const deleteData = async (storeName, key) => {
+  const db = await initDB();
+  const tx = db.transaction(storeName, 'readwrite');
+  const store = tx.objectStore(storeName);
+  store.delete(key);
+  return tx.complete;
+};
+
+const getAllData = async (storeName) => {
+  const db = await initDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(request.result);
+  });
+};
+
+const getVal = async (storeName, key) => {
+  const db = await initDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
+    const request = store.get(key);
+    request.onsuccess = () => resolve(request.result);
+  });
+};
+
+// --- DATA HELPERS ---
+
+const createPhase = (type, duration) => ({ type, duration });
+const p = (label, value, step = 1, min = 0) => ({ label, value, step, min });
+
+const formatTime = (totalSeconds) => {
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return s === 0 ? `${m}m` : `${m}m ${s}s`;
+};
+
+const formatPlayerTime = (totalSeconds) => {
+  if (totalSeconds < 60) return totalSeconds.toString();
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+const calc = (start, target, cycles, index) => {
+  if (cycles <= 1) return start;
+  return Math.round(start + ((target - start) / (cycles - 1)) * index);
+};
+
+const DEFAULT_EXERCISES = [
+  { id: 'co2-std', name: 'CO2 Tolerance Table', category: 'Tables', sortOrder: 0, params: { cycles: p('Total Cycles', 8, 1, 1), startRest: p('Starting Rest', 120, 5, 0), targetRest: p('Target Rest', 15, 5, 0), in: p('Inhale', 5), holdIn: p('Hold (Full)', 45, 5), out: p('Exhale', 10), holdOut: p('Hold (Empty)', 0) } },
+  { id: 'co2-exh', name: 'Exhaled CO2 Table', category: 'Tables', sortOrder: 1, params: { cycles: p('Total Cycles', 8, 1, 1), startRest: p('Starting Rest', 90, 5, 0), targetRest: p('Target Rest', 30, 5, 0), in: p('Inhale', 5), out: p('Exhale', 10), holdIn: p('Hold (Full)', 0), holdOut: p('Hold (Empty)', 15, 5) } },
+  { id: 'o2-std', name: 'O2 Tolerance Table', category: 'Tables', sortOrder: 2, params: { cycles: p('Total Cycles', 8, 1, 1), rest: p('Rest Time', 120, 5), in: p('Inhale', 5), startHoldIn: p('Starting Hold', 30, 5), targetHoldIn: p('Target Hold', 135, 5), out: p('Exhale', 10), holdOut: p('Hold (Empty)', 0) } },
+  { id: 'tri1', name: 'Triangle: Progressive', category: 'Triangle Breath', sortOrder: 7, params: { cycles: p('Total Cycles', 6, 1, 1), startPhase: p('Starting Phase', 4, 1), targetPhase: p('Target Phase', 9, 1), rest: p('Rest Time', 30, 5), holdOut: p('Hold (Empty)', 0) } },
+  { id: 'nadi', name: 'nADI zodhana', category: 'Custom', sortOrder: 8, params: { cycles: p('Total Cycles', 5, 1, 1), in: p('Inhale', 16, 1), holdIn: p('Hold (Full)', 64, 1), out: p('Exhale', 32, 1), holdOut: p('Hold (Empty)', 0), rest: p('Rest Time', 0) } }
+];
+
+const getGenerator = (template, params) => {
+  const cyclesCount = params.cycles.value;
+  return Array.from({ length: cyclesCount }).map((_, i) => {
+    const phases = [];
+    const inVal = params.startIn && params.targetIn ? calc(params.startIn.value, params.targetIn.value, cyclesCount, i) : (params.in?.value || params.startPhase?.value || 0);
+    if (inVal > 0) phases.push(createPhase('in', inVal));
+    const holdFullVal = params.startHoldIn && params.targetHoldIn ? calc(params.startHoldIn.value, params.targetHoldIn.value, cyclesCount, i) : (params.holdIn?.value || params.startPhase?.value || 0);
+    if (holdFullVal > 0) phases.push(createPhase('holdIn', holdFullVal));
+    const outVal = params.startOut && params.targetOut ? calc(params.startOut.value, params.targetOut.value, cyclesCount, i) : (params.out?.value || params.startPhase?.value || 0);
+    if (outVal > 0) phases.push(createPhase('out', outVal));
+    const holdEmptyVal = params.startHoldOut && params.targetHoldOut ? calc(params.startHoldOut.value, params.targetHoldOut.value, cyclesCount, i) : (params.holdOut?.value || 0);
+    if (holdEmptyVal > 0) phases.push(createPhase('holdOut', holdEmptyVal));
+    const restVal = params.startRest && params.targetRest ? calc(params.startRest.value, params.targetRest.value, cyclesCount, i) : (params.rest?.value || 0);
+    if (restVal > 0) phases.push(createPhase('rest', restVal));
+    return phases;
+  });
+};
+
+const PHASE_UI = {
+  in: { text: 'Breathe In', color: 'text-sky-400', bg: 'bg-sky-400', scale: 1.5 },
+  holdIn: { text: 'Hold Full', color: 'text-indigo-400', bg: 'bg-indigo-400', scale: 1.5 },
+  out: { text: 'Breathe Out', color: 'text-teal-400', bg: 'bg-teal-400', scale: 0.8 },
+  holdOut: { text: 'Hold Empty', color: 'text-emerald-500', bg: 'bg-emerald-500', scale: 0.8 },
+  rest: { text: 'Normal Breathing', color: 'text-slate-400', bg: 'bg-slate-500', scale: 1 }
+};
+
+// --- WEB WORKER TIMER CODE ---
+const timerWorkerBlob = new Blob([`
+  let timer = null;
+  self.onmessage = (e) => {
+    if (e.data === 'start') {
+      if (timer) clearInterval(timer);
+      timer = setInterval(() => self.postMessage('tick'), 1000);
+    } else if (e.data === 'stop') {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+`], { type: 'application/javascript' });
+
+// --- MAIN APP COMPONENT ---
+
+export default function App() {
+  const [currentTab, setCurrentTab] = useState('starred');
+  const [exercises, setExercises] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [selectedExerciseTemplate, setSelectedExerciseTemplate] = useState(null);
+  const [selectedExercise, setSelectedExercise] = useState(null);
+  const [logs, setLogs] = useState([]);
+  const [starredIds, setStarredIds] = useState([]);
+  const [collapsedCats, setCollapsedCats] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // PWA Service Worker Registration
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(err => {
+          console.log('ServiceWorker registration failed: ', err);
+        });
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        await initDB();
+        let savedEx = await getAllData(STORE_EXERCISES);
+        if (savedEx.length === 0) {
+          for (const ex of DEFAULT_EXERCISES) await saveData(STORE_EXERCISES, null, ex);
+          savedEx = await getAllData(STORE_EXERCISES);
+        }
+        const savedLogs = await getAllData(STORE_LOGS);
+        const savedStarred = await getVal(STORE_SETTINGS, 'starredIds');
+        const savedCats = await getVal(STORE_SETTINGS, 'categories');
+        const savedCollapsed = await getVal(STORE_SETTINGS, 'collapsedCats');
+        
+        setExercises(savedEx.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+        setLogs(savedLogs.sort((a, b) => new Date(b.date) - new Date(a.date)));
+        if (savedStarred) setStarredIds(savedStarred);
+        if (savedCollapsed) setCollapsedCats(savedCollapsed);
+        
+        const uniqueCatsFromEx = [...new Set(savedEx.map(e => e.category))];
+        setCategories(savedCats || uniqueCatsFromEx);
+      } catch (err) { console.error(err); } finally { setIsLoading(false); }
+    };
+    loadData();
+  }, []);
+
+  const handleToggleStar = async (id) => {
+    const next = starredIds.includes(id) ? starredIds.filter(s => s !== id) : [...starredIds, id];
+    setStarredIds(next);
+    await saveData(STORE_SETTINGS, 'starredIds', next);
+  };
+
+  const handleToggleCollapse = async (cat) => {
+    const next = collapsedCats.includes(cat) ? collapsedCats.filter(c => c !== cat) : [...collapsedCats, cat];
+    setCollapsedCats(next);
+    await saveData(STORE_SETTINGS, 'collapsedCats', next);
+  };
+
+  const handleRenameCategory = async (oldName, newName) => {
+    if (!newName || oldName === newName) return;
+    const nextCats = categories.map(c => c === oldName ? newName : c);
+    setCategories(nextCats);
+    await saveData(STORE_SETTINGS, 'categories', nextCats);
+    const updated = exercises.map(ex => {
+      if (ex.category === oldName) {
+        const n = { ...ex, category: newName };
+        saveData(STORE_EXERCISES, null, n);
+        return n;
+      }
+      return ex;
+    });
+    setExercises(updated);
+  };
+
+  const handleDeleteCategory = async (catName) => {
+    if (!confirm(`Delete folder "${catName}" and all tables inside?`)) return;
+    const toDelete = exercises.filter(e => e.category === catName);
+    for (const ex of toDelete) await deleteData(STORE_EXERCISES, ex.id);
+    const nextEx = exercises.filter(e => e.category !== catName);
+    const nextCats = categories.filter(c => c !== catName);
+    setExercises(nextEx);
+    setCategories(nextCats);
+    await saveData(STORE_SETTINGS, 'categories', nextCats);
+  };
+
+  const handleMoveExercise = async (exId, newCat, targetIndex) => {
+    const list = [...exercises];
+    const itemIdx = list.findIndex(e => e.id === exId);
+    if (itemIdx === -1) return;
+    const item = { ...list[itemIdx], category: newCat };
+    list.splice(itemIdx, 1);
+    const catItems = list.filter(e => e.category === newCat);
+    const targetIdxInFullList = targetIndex !== undefined && catItems[targetIndex] 
+      ? list.indexOf(catItems[targetIndex]) 
+      : list.length;
+    list.splice(targetIdxInFullList === -1 ? list.length : targetIdxInFullList, 0, item);
+    const finalized = list.map((e, i) => ({ ...e, sortOrder: i }));
+    setExercises(finalized);
+    for (const ex of finalized) await saveData(STORE_EXERCISES, null, ex);
+  };
+
+  if (isLoading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center"><Wind className="text-sky-400 animate-pulse" size={48} /></div>;
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-indigo-500/30">
+      <header className="bg-slate-800/50 border-b border-slate-700 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-md mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Wind className="text-sky-400" size={24} />
+            <h1 className="text-xl font-bold tracking-tight">PranaFlow</h1>
+          </div>
+          <nav className="flex gap-4">
+            <button 
+              onClick={() => setCurrentTab('starred')} 
+              className={`p-2 rounded-full transition-colors ${currentTab === 'starred' ? 'text-yellow-400 bg-yellow-400/10' : 'text-slate-400'}`}
+            >
+              <Star size={20} />
+            </button>
+            <button 
+              onClick={() => setCurrentTab('exercises')} 
+              className={`p-2 rounded-full transition-colors ${currentTab === 'exercises' ? 'text-sky-400 bg-sky-400/10' : 'text-slate-400'}`}
+            >
+              <List size={20} />
+            </button>
+            <button 
+              onClick={() => setCurrentTab('log')} 
+              className={`p-2 rounded-full transition-colors ${currentTab === 'log' ? 'text-sky-400 bg-sky-400/10' : 'text-slate-400'}`}
+            >
+              <Activity size={20} />
+            </button>
+          </nav>
+        </div>
+      </header>
+
+      <main className="max-w-md mx-auto p-4 pb-24">
+        {currentTab === 'exercises' && (
+          <ExerciseList 
+            exercises={exercises} categories={categories} collapsedCats={collapsedCats}
+            onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            onGoCustom={() => setCurrentTab('custom')} starredIds={starredIds}
+            onToggleStar={handleToggleStar} onToggleCollapse={handleToggleCollapse}
+            onDelete={(id) => { deleteData(STORE_EXERCISES, id); setExercises(prev => prev.filter(e => e.id !== id)); }}
+            onRenameCategory={handleRenameCategory} onDeleteCategory={handleDeleteCategory}
+            onMoveExercise={handleMoveExercise}
+          />
+        )}
+        {currentTab === 'starred' && (
+          <ExerciseList 
+            exercises={exercises.filter(e => starredIds.includes(e.id))} categories={[...new Set(exercises.filter(e => starredIds.includes(e.id)).map(e => e.category))]}
+            onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            starredIds={starredIds} onToggleStar={handleToggleStar} hideControls
+          />
+        )}
+        {currentTab === 'configure' && selectedExerciseTemplate && (
+          <ConfigureExercise 
+            template={selectedExerciseTemplate} 
+            onStart={(ex) => { setSelectedExercise(ex); setCurrentTab('player'); }} 
+            onCancel={() => setCurrentTab('exercises')}
+            onUpdateTemplate={async (updated) => { await saveData(STORE_EXERCISES, null, updated); setExercises(exercises.map(e => e.id === updated.id ? updated : e)); }}
+          />
+        )}
+        {currentTab === 'custom' && (
+          <CustomBuilder onStart={async (ex) => {
+            const template = { id: 'custom-' + Date.now(), name: ex.name, category: 'Custom', params: ex.params, sortOrder: exercises.length };
+            await saveData(STORE_EXERCISES, null, template);
+            setExercises([...exercises, template]);
+            setSelectedExercise(ex);
+            setCurrentTab('player');
+          }} onCancel={() => setCurrentTab('exercises')} />
+        )}
+        {currentTab === 'player' && selectedExercise && (
+          <Player exercise={selectedExercise} onClose={() => setCurrentTab('exercises')} onFinish={async (s) => { setLogs(p => [s, ...p]); await saveData(STORE_LOGS, null, s); setCurrentTab('log'); }} />
+        )}
+        {currentTab === 'log' && <SessionLog logs={logs} />}
+      </main>
+    </div>
+  );
+}
+
+// --- SUB-COMPONENTS ---
+
+function ExerciseList({ exercises, categories, collapsedCats = [], onSelect, onGoCustom, starredIds, onToggleStar, onDelete, onRenameCategory, onDeleteCategory, onMoveExercise, onToggleCollapse, hideControls }) {
+  const [editingCat, setEditingCat] = useState(null);
+  const [editVal, setEditVal] = useState("");
+
+  const handleDragStart = (e, id) => e.dataTransfer.setData("exId", id);
+  const handleDrop = (e, cat, targetIdx) => { 
+    e.preventDefault(); 
+    const id = e.dataTransfer.getData("exId"); 
+    if (onMoveExercise) onMoveExercise(id, cat, targetIdx); 
+  };
+
+  return (
+    <div className="space-y-6">
+      {!hideControls && <button onClick={onGoCustom} className="w-full flex items-center justify-center gap-2 p-4 rounded-2xl bg-sky-500/10 border border-sky-500/30 text-sky-400 hover:bg-sky-500/20 transition-all font-medium"><Plus size={20} /> New Breath Table</button>}
+
+      {categories.map(cat => {
+        const isCollapsed = collapsedCats.includes(cat);
+        const catEx = exercises.filter(e => e.category === cat);
+        return (
+          <div key={cat} className="space-y-2" onDragOver={e => e.preventDefault()} onDrop={e => handleDrop(e, cat)}>
+            <div className="flex items-center justify-between group px-1">
+              <div className="flex items-center gap-2 flex-1">
+                <button onClick={() => onToggleCollapse?.(cat)} className="text-slate-500 hover:text-white transition-colors">
+                  {isCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
+                </button>
+                {editingCat === cat ? (
+                  <input autoFocus className="bg-slate-800 border-b border-sky-500 text-xs font-bold uppercase tracking-wider outline-none text-slate-100" value={editVal} onChange={e => setEditVal(e.target.value)} onBlur={() => { onRenameCategory(cat, editVal); setEditingCat(null); }} onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()} />
+                ) : (
+                  <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{cat}</h2>
+                )}
+                {!hideControls && (
+                  <div className="flex gap-1">
+                    <button onClick={() => { setEditingCat(cat); setEditVal(cat); }} className="opacity-0 group-hover:opacity-100 p-1 text-slate-600 hover:text-sky-400 transition-all"><Edit3 size={12} /></button>
+                    <button onClick={() => onDeleteCategory(cat)} className="opacity-0 group-hover:opacity-100 p-1 text-slate-600 hover:text-red-400 transition-all"><Trash2 size={12} /></button>
+                  </div>
+                )}
+              </div>
+              <span className="text-[10px] text-slate-600 font-mono">{catEx.length}</span>
+            </div>
+
+            {!isCollapsed && (
+              <div className="grid gap-2">
+                {catEx.map((ex, idx) => (
+                  <div key={ex.id} draggable={!hideControls} onDragStart={e => handleDragStart(e, ex.id)} onDrop={e => { e.stopPropagation(); handleDrop(e, cat, idx); }}
+                    className="flex items-center justify-between p-4 rounded-2xl bg-slate-800/40 border border-slate-700 hover:bg-slate-700/50 transition-all text-left group cursor-pointer" onClick={() => onSelect(ex)}>
+                    <div className="flex items-center gap-3">
+                      {!hideControls && <GripVertical size={16} className="text-slate-600 cursor-grab" />}
+                      <h3 className="font-medium text-slate-200">{ex.name}</h3>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={e => { e.stopPropagation(); onToggleStar(ex.id); }} className="p-2 text-slate-500 hover:text-yellow-400 transition-colors">
+                        <Star size={18} className={starredIds.includes(ex.id) ? "fill-yellow-400 text-yellow-400" : ""} />
+                      </button>
+                      <button onClick={e => { e.stopPropagation(); onSelect(ex); }} className="p-2 text-sky-400"><Settings2 size={18} /></button>
+                      {!hideControls && <button onClick={e => { e.stopPropagation(); if(confirm('Delete?')) onDelete(ex.id); }} className="p-2 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100"><Trash2 size={18} /></button>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ConfigureExercise({ template, onStart, onCancel, onUpdateTemplate }) {
+  const [params, setParams] = useState(template.params);
+  const [name, setName] = useState(template.name);
+  const update = (k, v) => setParams(p => ({ ...p, [k]: { ...p[k], value: Math.max(p[k].min || 0, v) } }));
+
+  return (
+    <div className="space-y-6 animate-in slide-in-from-right-4 duration-500">
+      <div className="flex items-center justify-between gap-4">
+        <input className="text-xl font-bold bg-transparent border-b border-slate-700 focus:border-sky-500 outline-none w-full py-1 text-slate-100" value={name} onChange={e => setName(e.target.value)} />
+        <button onClick={onCancel} className="text-slate-400"><X size={20} /></button>
+      </div>
+      <div className="space-y-2">
+        {Object.entries(params).map(([key, p]) => (
+          <div key={key} className={`flex items-center justify-between p-3 rounded-xl bg-slate-800/50 border border-slate-700 ${key === 'cycles' ? 'ring-1 ring-sky-500/30' : ''}`}>
+            <span className="text-slate-400 text-sm">{p.label}</span>
+            <div className="flex items-center gap-2">
+              <button onClick={() => update(key, p.value - (p.step || 1))} className="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-300">-</button>
+              <input 
+                type="number"
+                className="w-16 bg-slate-900/50 border border-slate-700 rounded text-center text-sm font-mono text-sky-400 py-1 outline-none focus:border-sky-500"
+                value={p.value}
+                onChange={(e) => update(key, parseInt(e.target.value) || 0)}
+              />
+              <button onClick={() => update(key, p.value + (p.step || 1))} className="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 text-slate-300">+</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button onClick={() => { 
+          const u = { ...template, name, params }; 
+          onUpdateTemplate(u); 
+          onStart({ ...u, cycles: getGenerator(template, params) }); 
+        }} className="w-full py-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-900 font-bold text-lg shadow-lg">Start Breathing</button>
+    </div>
+  );
+}
+
+function CustomBuilder({ onStart, onCancel }) {
+  const [c, setC] = useState({ name: 'My New Table', in: 4, holdIn: 4, out: 4, holdOut: 0, rest: 0, cycles: 5 });
+  const Row = ({ l, f }) => (
+    <div className="flex items-center justify-between p-3 bg-slate-800/50 rounded-xl border border-slate-700 text-sm">
+      <span className="text-slate-400">{l}</span>
+      <div className="flex items-center gap-2">
+        <button onClick={() => setC(p => ({...p, [f]: Math.max(0, p[f] - 1)}))} className="w-8 h-8 rounded-full bg-slate-700">-</button>
+        <input 
+          type="number"
+          className="w-16 bg-slate-900/50 border border-slate-700 rounded text-center font-mono text-sky-400 py-1 outline-none"
+          value={c[f]}
+          onChange={(e) => setC(p => ({...p, [f]: parseInt(e.target.value) || 0}))}
+        />
+        <button onClick={() => setC(p => ({...p, [f]: p[f] + 1}))} className="w-8 h-8 rounded-full bg-slate-700">+</button>
+      </div>
+    </div>
+  );
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between"><h2 className="text-xl font-bold">New Table</h2><button onClick={onCancel} className="text-slate-400"><X /></button></div>
+      <input className="w-full bg-slate-800 border border-slate-700 rounded-xl p-4 outline-none focus:border-sky-500 text-slate-100" value={c.name} onChange={e => setC(p => ({...p, name: e.target.value}))} />
+      <Row l="Inhale" f="in" /><Row l="Hold Full" f="holdIn" /><Row l="Exhale" f="out" /><Row l="Hold Empty" f="holdOut" /><Row l="Rest" f="rest" />
+      <div className="pt-2"><Row l="Cycles" f="cycles" /></div>
+      <button onClick={() => onStart({ name: c.name, params: { cycles: p('Cycles', c.cycles, 1, 1), in: p('Inhale', c.in), holdIn: p('Hold (Full)', c.holdIn), out: p('Exhale', c.out), holdOut: p('Hold (Empty)', c.holdOut), rest: p('Rest Time', c.rest, 5) } })} className="w-full py-4 bg-sky-500 text-slate-900 rounded-xl font-bold shadow-lg">Save Table</button>
+    </div>
+  );
+}
+
+function Player({ exercise, onClose, onFinish }) {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [cycleIndex, setCycleIndex] = useState(0);
+  const [phaseIndex, setPhaseIndex] = useState(0);
+  
+  const currentCycle = exercise.cycles[cycleIndex];
+  const currentPhase = currentCycle?.[phaseIndex];
+  
+  const [timeLeft, setTimeLeft] = useState(currentPhase?.duration || 0);
+  const wakeLockRef = useRef(null);
+  const workerRef = useRef(null);
+
+  // Initialize Worker for background timing
+  useEffect(() => {
+    const workerUrl = URL.createObjectURL(timerWorkerBlob);
+    const worker = new Worker(workerUrl);
+    
+    worker.onmessage = () => {
+      setTimeLeft(prev => prev - 1);
+    };
+    
+    workerRef.current = worker;
+    return () => {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+    };
+  }, []);
+
+  // Handle Wake Lock to keep screen on
+  const requestWakeLock = async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+      } catch (err) {
+        console.warn(`Wake Lock request failed: ${err.message}`);
+      }
+    }
+  };
+
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release();
+      wakeLockRef.current = null;
+    }
+  };
+
+  // Play chime on start of phase/cycle
+  useEffect(() => {
+    if (isPlaying) {
+      playChime('phase');
+    }
+  }, [cycleIndex, phaseIndex, isPlaying]);
+
+  // Handle Play/Pause
+  useEffect(() => {
+    if (isPlaying) {
+      requestWakeLock();
+      workerRef.current?.postMessage('start');
+    } else {
+      releaseWakeLock();
+      workerRef.current?.postMessage('stop');
+    }
+  }, [isPlaying]);
+
+  // Phase transition logic
+  useEffect(() => {
+    if (isPlaying && timeLeft <= 0) {
+      if (phaseIndex < currentCycle.length - 1) { 
+        setPhaseIndex(phaseIndex + 1); 
+        setTimeLeft(currentCycle[phaseIndex + 1].duration); 
+      }
+      else if (cycleIndex < exercise.cycles.length - 1) { 
+        setCycleIndex(cycleIndex + 1); 
+        setPhaseIndex(0); 
+        setTimeLeft(exercise.cycles[cycleIndex + 1][0].duration); 
+      }
+      else { 
+        setIsPlaying(false);
+        releaseWakeLock();
+        playChime('completion');
+        onFinish({ 
+          id: Date.now().toString(), 
+          date: new Date().toISOString(), 
+          exerciseName: exercise.name, 
+          totalCycles: exercise.cycles.length,
+          settings: JSON.parse(JSON.stringify(exercise.params)) 
+        }); 
+      }
+    }
+  }, [timeLeft, isPlaying, phaseIndex, cycleIndex, currentCycle, exercise, onFinish]);
+
+  if (!currentPhase) return null;
+  const ui = PHASE_UI[currentPhase.type];
+
+  const handleTogglePlay = () => {
+    setIsPlaying(!isPlaying);
+  };
+
+  const handleStop = () => {
+    setIsPlaying(false);
+    releaseWakeLock();
+    onClose();
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[70vh] animate-in zoom-in-95">
+      <div className="w-full flex justify-between items-center mb-8 text-slate-100">
+        <button onClick={handleStop} className="p-2 bg-slate-800 rounded-full hover:bg-slate-700 transition-colors">
+          <ArrowLeft size={24} />
+        </button>
+        <div className="text-center">
+          <h2 className="text-lg font-bold">{exercise.name}</h2>
+          <p className="text-xs text-slate-500 uppercase tracking-widest">Cycle {cycleIndex + 1} / {exercise.cycles.length}</p>
+        </div>
+        <div className="w-10" />
+      </div>
+
+      <div className="relative w-64 h-64 flex items-center justify-center mb-16">
+        <div 
+          className={`absolute inset-0 rounded-full opacity-20 ${ui.bg}`} 
+          style={{ 
+            transform: `scale(${isPlaying ? ui.scale : 1})`, 
+            transition: `transform ${isPlaying ? currentPhase.duration : 0.5}s linear` 
+          }} 
+        />
+        <div className="relative z-10 flex flex-col items-center justify-center w-48 h-48 bg-slate-800 rounded-full border-4 border-slate-700 shadow-2xl">
+          <span className={`text-xl font-bold mb-1 ${ui.color}`}>{ui.text}</span>
+          <span className="text-5xl font-mono text-white tracking-tighter">{formatPlayerTime(timeLeft)}</span>
+        </div>
+      </div>
+
+      <div className="flex gap-8">
+        <button onClick={handleStop} className="w-14 h-14 rounded-full bg-slate-800 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+          <Square size={24} />
+        </button>
+        <button onClick={handleTogglePlay} className="w-20 h-20 rounded-full bg-sky-500 text-slate-900 flex items-center justify-center shadow-lg hover:bg-sky-400 transition-all active:scale-95">
+          {isPlaying ? <Pause size={32} fill="currentColor" /> : <Play size={32} fill="currentColor" className="ml-1" />}
+        </button>
+      </div>
+
+      <div className="mt-8 text-center text-slate-500 text-sm h-6">
+        {phaseIndex < currentCycle.length - 1 ? (
+          <span>Next: <span className={PHASE_UI[currentCycle[phaseIndex + 1].type].color}>{PHASE_UI[currentCycle[phaseIndex + 1].type].text}</span></span>
+        ) : (
+          cycleIndex < exercise.cycles.length - 1 ? <span>Next Cycle Coming Up...</span> : null
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SessionLog({ logs }) {
+  if (logs.length === 0) return <div className="text-center py-20 text-slate-600 italic">History will appear after your first session.</div>;
+
+  const getSettingsSummary = (params) => {
+    if (!params) return "";
+    const parts = [];
+    if (params.in?.value > 0) parts.push(`I:${params.in.value}s`);
+    if (params.startIn?.value > 0) parts.push(`I:${params.startIn.value}➔${params.targetIn?.value}s`);
+    if (params.holdIn?.value > 0) parts.push(`F:${params.holdIn.value}s`);
+    if (params.startHoldIn?.value > 0) parts.push(`F:${params.startHoldIn.value}➔${params.targetHoldIn?.value}s`);
+    if (params.out?.value > 0) parts.push(`E:${params.out.value}s`);
+    if (params.startOut?.value > 0) parts.push(`E:${params.startOut.value}➔${params.targetOut?.value}s`);
+    if (params.holdOut?.value > 0) parts.push(`H:${params.holdOut.value}s`);
+    if (params.startHoldOut?.value > 0) parts.push(`H:${params.startHoldOut.value}➔${params.targetHoldOut?.value}s`);
+    if (params.startRest?.value > 0 && params.targetRest?.value !== undefined) {
+      parts.push(`R:${params.startRest.value}➔${params.targetRest.value}s`);
+    } else if (params.rest?.value > 0) {
+      parts.push(`R:${params.rest.value}s`);
+    }
+    return parts.join(' • ');
+  };
+
+  return (
+    <div className="space-y-3 animate-in fade-in">
+      <h2 className="text-xl font-bold mb-4">Activity Log</h2>
+      {logs.map(log => {
+        const d = new Date(log.date);
+        return (
+          <div key={log.id} className="flex flex-col p-4 bg-slate-800/60 border border-slate-700 rounded-2xl gap-2">
+            <div className="flex justify-between items-start">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-green-500/10 text-green-400 rounded-full"><CheckCircle2 size={16} /></div>
+                <div>
+                  <h3 className="font-medium text-slate-200 text-sm">{log.exerciseName}</h3>
+                  <p className="text-[10px] text-slate-500 uppercase">{d.toLocaleDateString()} • {d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit'})}</p>
+                </div>
+              </div>
+              <div className="text-right flex flex-col items-end">
+                <span className="text-lg font-bold text-sky-400 leading-none">{log.totalCycles}</span>
+                <span className="text-[8px] uppercase text-slate-600 tracking-wider">Cycles</span>
+              </div>
+            </div>
+            {log.settings && (
+              <div className="mt-1 px-2 py-1.5 bg-slate-900/50 rounded-lg border border-slate-700/50">
+                <p className="text-[10px] font-mono text-slate-400 overflow-hidden text-ellipsis whitespace-nowrap">
+                  {getSettingsSummary(log.settings)}
+                </p>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

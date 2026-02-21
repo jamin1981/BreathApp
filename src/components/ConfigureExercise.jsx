@@ -1,10 +1,17 @@
 import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Save, Check } from 'lucide-react';
 import { getGenerator } from '../lib/exercises.js';
 
 export default function ConfigureExercise({ template, onStart, onCancel, onUpdateTemplate }) {
   const [params, setParams] = useState(template.params);
   const [name, setName] = useState(template.name);
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = async () => {
+    await onUpdateTemplate({ ...template, name, params });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
 
   const update = (k, v) =>
     setParams(prev => ({ ...prev, [k]: { ...prev[k], value: Math.max(prev[k].min || 0, v) } }));
@@ -41,16 +48,29 @@ export default function ConfigureExercise({ template, onStart, onCancel, onUpdat
         ))}
       </div>
 
-      <button
-        onClick={() => {
-          const updated = { ...template, name, params };
-          onUpdateTemplate(updated);
-          onStart({ ...updated, cycles: getGenerator(template, params) });
-        }}
-        className="w-full py-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-900 font-bold text-lg shadow-lg"
-      >
-        Start Breathing
-      </button>
+      <div className="flex gap-3">
+        <button
+          onClick={handleSave}
+          className={`flex items-center justify-center gap-2 px-5 py-4 rounded-xl font-semibold transition-all ${
+            saved
+              ? 'bg-green-500/20 border border-green-500/50 text-green-400'
+              : 'bg-slate-700 hover:bg-slate-600 text-slate-300 border border-slate-600'
+          }`}
+        >
+          {saved ? <Check size={18} /> : <Save size={18} />}
+          {saved ? 'Saved' : 'Save'}
+        </button>
+        <button
+          onClick={() => {
+            const updated = { ...template, name, params };
+            onUpdateTemplate(updated);
+            onStart({ ...updated, cycles: getGenerator(template, params) });
+          }}
+          className="flex-1 py-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-900 font-bold text-lg shadow-lg"
+        >
+          Start Breathing
+        </button>
+      </div>
     </div>
   );
 }

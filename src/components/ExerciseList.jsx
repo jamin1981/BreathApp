@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Plus, Star, Settings2, Trash2, GripVertical, ChevronDown, ChevronRight, Edit3 } from 'lucide-react';
+import { Plus, Star, Settings2, Trash2, GripVertical, ChevronDown, ChevronRight, Edit3, Play } from 'lucide-react';
 
 export default function ExerciseList({
-  exercises, categories, collapsedCats = [], onSelect, onGoCustom,
+  exercises, categories, collapsedCats = [], onSelect, onQuickStart, onGoCustom,
   starredIds, onToggleStar, onDelete, onRenameCategory, onDeleteCategory,
   onMoveExercise, onToggleCollapse, hideControls
 }) {
@@ -72,6 +72,14 @@ export default function ExerciseList({
                   >
                     <div className="flex items-center gap-3">
                       {!hideControls && <GripVertical size={16} className="text-slate-600 cursor-grab" />}
+                      {onQuickStart && (
+                        <button
+                          onClick={e => { e.stopPropagation(); onQuickStart(ex); }}
+                          className="w-8 h-8 rounded-full bg-sky-500 hover:bg-sky-400 active:scale-95 flex items-center justify-center text-slate-900 transition-all shadow-md"
+                        >
+                          <Play size={14} fill="currentColor" className="ml-0.5" />
+                        </button>
+                      )}
                       <h3 className="font-medium text-slate-200">{ex.name}</h3>
                     </div>
                     <div className="flex items-center gap-1">

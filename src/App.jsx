@@ -113,6 +113,12 @@ export default function App() {
     setExercises(prev => prev.filter(e => e.id !== id));
   };
 
+  const handleQuickStart = (template) => {
+    const exercise = { ...template, cycles: getGenerator(template, template.params) };
+    setSelectedExercise(exercise);
+    setCurrentTab('player');
+  };
+
   const handleFinishSession = async (logEntry) => {
     setLogs(prev => [logEntry, ...prev]);
     await saveData(STORE_LOGS, null, logEntry);
@@ -168,6 +174,7 @@ export default function App() {
             categories={categories}
             collapsedCats={collapsedCats}
             onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            onQuickStart={handleQuickStart}
             onGoCustom={() => setCurrentTab('custom')}
             starredIds={starredIds}
             onToggleStar={handleToggleStar}
@@ -184,6 +191,7 @@ export default function App() {
             exercises={starredExercises}
             categories={starredCategories}
             onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            onQuickStart={handleQuickStart}
             starredIds={starredIds}
             onToggleStar={handleToggleStar}
             hideControls

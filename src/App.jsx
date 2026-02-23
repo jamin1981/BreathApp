@@ -13,6 +13,7 @@ import SessionLog from './components/SessionLog.jsx';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState('starred');
+  const [previousTab, setPreviousTab] = useState('starred');
   const [exercises, setExercises] = useState([]);
   const [categories, setCategories] = useState([]);
   const [selectedExerciseTemplate, setSelectedExerciseTemplate] = useState(null);
@@ -27,8 +28,10 @@ export default function App() {
       try {
         await initDB();
         let savedEx = await getAllData(STORE_EXERCISES);
-        if (savedEx.length === 0) {
-          for (const ex of DEFAULT_EXERCISES) await saveData(STORE_EXERCISES, null, ex);
+        const savedIds = new Set(savedEx.map(e => e.id));
+        const missing = DEFAULT_EXERCISES.filter(e => !savedIds.has(e.id));
+        if (missing.length > 0) {
+          for (const ex of missing) await saveData(STORE_EXERCISES, null, ex);
           savedEx = await getAllData(STORE_EXERCISES);
         }
         const savedLogs = await getAllData(STORE_LOGS);
@@ -116,6 +119,7 @@ export default function App() {
   const handleQuickStart = (template) => {
     const exercise = { ...template, cycles: getGenerator(template, template.params) };
     setSelectedExercise(exercise);
+    setPreviousTab(currentTab);
     setCurrentTab('player');
   };
 
@@ -173,7 +177,7 @@ export default function App() {
             exercises={exercises}
             categories={categories}
             collapsedCats={collapsedCats}
-            onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            onSelect={(t) => { setSelectedExerciseTemplate(t); setPreviousTab('exercises'); setCurrentTab('configure'); }}
             onQuickStart={handleQuickStart}
             onGoCustom={() => setCurrentTab('custom')}
             starredIds={starredIds}
@@ -190,7 +194,7 @@ export default function App() {
           <ExerciseList
             exercises={starredExercises}
             categories={starredCategories}
-            onSelect={(t) => { setSelectedExerciseTemplate(t); setCurrentTab('configure'); }}
+            onSelect={(t) => { setSelectedExerciseTemplate(t); setPreviousTab('starred'); setCurrentTab('configure'); }}
             onQuickStart={handleQuickStart}
             starredIds={starredIds}
             onToggleStar={handleToggleStar}
@@ -202,7 +206,7 @@ export default function App() {
           <ConfigureExercise
             template={selectedExerciseTemplate}
             onStart={(ex) => { setSelectedExercise(ex); setCurrentTab('player'); }}
-            onCancel={() => setCurrentTab('exercises')}
+            onCancel={() => setCurrentTab(previousTab)}
             onUpdateTemplate={async (updated) => {
               await saveData(STORE_EXERCISES, null, updated);
               setExercises(exercises.map(e => (e.id === updated.id ? updated : e)));
@@ -232,7 +236,7 @@ export default function App() {
         {currentTab === 'player' && selectedExercise && (
           <Player
             exercise={selectedExercise}
-            onClose={() => setCurrentTab('exercises')}
+            onClose={() => setCurrentTab(previousTab)}
             onFinish={handleFinishSession}
           />
         )}

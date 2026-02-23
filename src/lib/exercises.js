@@ -41,7 +41,8 @@ export const getGenerator = (template, params) => {
     const holdEmptyVal = params.startHoldOut && params.targetHoldOut ? calc(params.startHoldOut.value, params.targetHoldOut.value, cyclesCount, i) : (params.holdOut?.value || 0);
     if (holdEmptyVal > 0) phases.push(createPhase('holdOut', holdEmptyVal));
     const restVal = params.startRest && params.targetRest ? calc(params.startRest.value, params.targetRest.value, cyclesCount, i) : (params.rest?.value || 0);
-    if (restVal > 0) phases.push(createPhase('rest', restVal));
+    const isLastCycle = i === cyclesCount - 1;
+    if (restVal > 0 && !isLastCycle) phases.push(createPhase('rest', restVal));
     return phases;
   });
 };
